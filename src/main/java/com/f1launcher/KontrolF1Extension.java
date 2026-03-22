@@ -52,6 +52,7 @@ public class KontrolF1Extension extends ControllerExtension
 
     private final boolean[][] hasContent = new boolean[NUM_TRACKS][NUM_SCENES];
     private final boolean[][] isPlaying  = new boolean[NUM_TRACKS][NUM_SCENES];
+    private final boolean[][] isQueued   = new boolean[NUM_TRACKS][NUM_SCENES];
     private final int[][]     padR       = new int[NUM_TRACKS][NUM_SCENES];
     private final int[][]     padG       = new int[NUM_TRACKS][NUM_SCENES];
     private final int[][]     padB       = new int[NUM_TRACKS][NUM_SCENES];
@@ -73,6 +74,12 @@ public class KontrolF1Extension extends ControllerExtension
     private final byte[]         outputReport1 = new byte[81];
     private final byte[]         outputReport2 = new byte[81];
     private volatile boolean     ledsDirty     = true;
+    private volatile boolean     blinkOn       = true;
+    private volatile boolean     blinkOnQueued = true;
+    private volatile boolean     running       = false;
+
+    private static final int BLINK_INTERVAL_MS = 350;
+    private static final int BLINK_QUEUED_MS   = 120;
 
     // ── Constructor ──────────────────────────────────────────────────────────
     protected KontrolF1Extension(final KontrolF1ExtensionDefinition definition, final ControllerHost host)
@@ -138,6 +145,11 @@ public class KontrolF1Extension extends ControllerExtension
 
                 slot.hasContent().addValueObserver(v -> { hasContent[ft][fs] = v; ledsDirty = true; });
                 slot.isPlaying().addValueObserver(v ->  { isPlaying[ft][fs]  = v; ledsDirty = true; });
+                slot.isPlaybackQueued().addValueObserver(v -> {
+                    isQueued[ft][fs] = v;
+                    if (v) host.println("Queued: track=" + ft + " scene=" + fs);
+                    ledsDirty = true;
+                });
                 slot.color().addValueObserver((r, g, b) ->
                 {
                     padR[ft][fs] = (int) (r * 0x7F);
@@ -150,6 +162,9 @@ public class KontrolF1Extension extends ControllerExtension
 
         updateBothDisplays(1);
         ledsDirty = true;
+        running = true;
+        scheduleBlink();
+        scheduleBlinkQueued();
 
         final String msg = hidDevice2 != null
             ? "F1 Clip Launcher - 2× F1 - Scenes 1 - 4"
@@ -168,10 +183,32 @@ public class KontrolF1Extension extends ControllerExtension
         }
     }
 
+    // ── Blink timers ─────────────────────────────────────────────────────────
+    private void scheduleBlink()
+    {
+        getHost().scheduleTask(() -> {
+            if (!running) return;
+            blinkOn = !blinkOn;
+            ledsDirty = true;
+            scheduleBlink();
+        }, BLINK_INTERVAL_MS);
+    }
+
+    private void scheduleBlinkQueued()
+    {
+        getHost().scheduleTask(() -> {
+            if (!running) return;
+            blinkOnQueued = !blinkOnQueued;
+            ledsDirty = true;
+            scheduleBlinkQueued();
+        }, BLINK_QUEUED_MS);
+    }
+
     // ── Exit ─────────────────────────────────────────────────────────────────
     @Override
     public void exit()
     {
+        running = false;
         if (hidDevice1 != null)
         {
             clearAllLeds(outputReport1);
@@ -322,11 +359,17 @@ public class KontrolF1Extension extends ControllerExtension
                 final int t      = trackOffset + lt;
                 final int offset = OFF_PADS + (s * NUM_TRACKS_PER_F1 + lt) * 3;
 
-                if (isPlaying[t][s])
+                if (isQueued[t][s])
                 {
-                    report[offset]     = (byte) padB[t][s];
-                    report[offset + 1] = (byte) padR[t][s];
-                    report[offset + 2] = (byte) padG[t][s];
+                    report[offset]     = blinkOnQueued ? (byte) padB[t][s] : 0;
+                    report[offset + 1] = blinkOnQueued ? (byte) padR[t][s] : 0;
+                    report[offset + 2] = blinkOnQueued ? (byte) padG[t][s] : 0;
+                }
+                else if (isPlaying[t][s])
+                {
+                    report[offset]     = blinkOn ? (byte) padB[t][s] : (byte) (padB[t][s] / 3);
+                    report[offset + 1] = blinkOn ? (byte) padR[t][s] : (byte) (padR[t][s] / 3);
+                    report[offset + 2] = blinkOn ? (byte) padG[t][s] : (byte) (padG[t][s] / 3);
                 }
                 else if (hasContent[t][s])
                 {
