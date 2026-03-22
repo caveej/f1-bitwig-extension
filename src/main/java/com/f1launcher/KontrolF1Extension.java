@@ -43,7 +43,8 @@ public class KontrolF1Extension extends ControllerExtension
     private static final int NUM_F1S           = 2;
     private static final int NUM_TRACKS        = NUM_TRACKS_PER_F1 * NUM_F1S;  // 8 total
     private static final int NUM_SCENES        = 4;
-    private static final int MAX_LAYERS        = 16;
+    private static final int MAX_LAYERS              = 24;  // 24 × 4 = 96 scenes
+    private static final int CLIP_LAUNCHER_HEIGHT    = 7;   // visible scenes in Bitwig's clip launcher panel — adjust if your panel is taller/shorter
 
     // ── State ────────────────────────────────────────────────────────────────
     private HidDevice hidDevice1;  // F1 #1 → tracks 0-3
@@ -133,8 +134,9 @@ public class KontrolF1Extension extends ControllerExtension
         }
 
         // Set up 8-track bank
-        trackBank = host.createMainTrackBank(NUM_TRACKS, 0, NUM_SCENES);
+        trackBank = host.createMainTrackBank(NUM_TRACKS, 0, CLIP_LAUNCHER_HEIGHT);
         trackBank.sceneBank().scrollPosition().markInterested();
+        trackBank.sceneBank().scrollPosition().set(0);  // lock Clip Launcher to F1's initial position
 
         for (int t = 0; t < NUM_TRACKS; t++)
         {
@@ -325,9 +327,10 @@ public class KontrolF1Extension extends ControllerExtension
         if (newLayer == currentLayer) return;
         currentLayer = newLayer;
 
-        final int firstScene = currentLayer * NUM_SCENES + 1;
-        final int lastScene  = firstScene + NUM_SCENES - 1;
-        trackBank.sceneBank().scrollPosition().set(currentLayer * NUM_SCENES);
+        final int firstScene   = currentLayer * NUM_SCENES + 1;
+        final int lastScene    = firstScene + NUM_SCENES - 1;
+        final int scrollTarget = Math.max(0, currentLayer * NUM_SCENES - 1);
+        trackBank.sceneBank().scrollPosition().set(scrollTarget);
         updateBothDisplays(firstScene);
         getHost().showPopupNotification("Scenes " + firstScene + " - " + lastScene);
         ledsDirty = true;
