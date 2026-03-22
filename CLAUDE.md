@@ -6,10 +6,11 @@ It provides full clip launching functionality with RGB LED feedback and 7-segmen
 communicating entirely via USB HID — no MIDI, no NI Controller Editor required.
 
 ## Features
-- 4×4 pad grid → launches clips across 4 tracks × 4 scenes
-- Encoder (Browse wheel) → pages through scene layers (layer 0 = scenes 1–4, layer 1 = scenes 5–8, etc.)
-- 7-segment display → shows first scene number of current layer (e.g. "1", "5", "9", "13"...)
-- Stop buttons (4) → stop clips per track column
+- Supports 1 or 2 F1 controllers simultaneously (auto-detected)
+- 4×4 pad grid per F1 → F1 #1 controls tracks 1–4, F1 #2 controls tracks 5–8 (8 tracks total)
+- Encoder (Browse wheel) on either F1 → pages through scene layers (layer 0 = scenes 1–4, etc.)
+- 7-segment display → both F1s show same scene number, updated by either encoder
+- Stop buttons (4 per F1) → stop clips for that F1's 4 tracks
 - SHIFT + leftmost pad in a row → launch entire scene for that row
 - Encoder push + leftmost pad in a row → also launches entire scene
 - RGB pad LEDs → dim clip color when loaded, full clip color when playing, off when empty
@@ -108,6 +109,9 @@ The build automatically copies `KontrolF1ClipLauncher.bwextension` to:
 ## Key Design Decisions
 - **Pure HID** — no MIDI ports defined. All input/output goes through USB HID directly via PureJavaHidApi.
 - **No NI Controller Editor needed** — the extension communicates directly with F1 hardware.
+- **Dual F1 support** — extension enumerates all F1s by VID/PID. F1 #1 → tracks 0–3, F1 #2 → tracks 4–7. Single F1 still works fine (second device just absent).
+- **Shared scene layer** — `currentLayer` is global. Either encoder updates the layer, scroll position, and both displays simultaneously.
+- **Each F1 has its own outputReport** — `outputReport1` / `outputReport2` are separate byte arrays; `buildPadLeds()` takes a track offset to pick the right 4 tracks.
 - **Bitwig API calls from HID thread** — calls to `slot.launch()`, `track.stop()` etc. are made directly from the HID input callback thread. This works in practice despite not being on the Bitwig thread.
 - **LED state is dirty-flagged** — `ledsDirty` is set by Bitwig observers, LEDs are rebuilt and sent in `flush()`.
 - **Edge detection for buttons** — pad and stop button presses are detected by comparing current vs previous byte state (`curr & ~prev`), so only press events (not holds) trigger actions.
