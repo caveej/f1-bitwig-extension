@@ -43,13 +43,14 @@ public class KontrolF1Extension extends ControllerExtension
     private static final int NUM_F1S           = 2;
     private static final int NUM_TRACKS        = NUM_TRACKS_PER_F1 * NUM_F1S;  // 8 total
     private static final int NUM_SCENES        = 4;
-    private static final int MAX_LAYERS              = 24;  // 24 × 4 = 96 scenes
-    private static final int CLIP_LAUNCHER_HEIGHT    = 7;   // visible scenes in Bitwig's clip launcher panel — adjust if your panel is taller/shorter
+    private static final int MAX_LAYERS        = 16;
+    private static final int VIEWPORT_HEIGHT   = 12;  // visible scenes in Bitwig clip launcher — adjust if misaligned
 
     // ── State ────────────────────────────────────────────────────────────────
     private HidDevice hidDevice1;  // F1 #1 → tracks 0-3
     private HidDevice hidDevice2;  // F1 #2 → tracks 4-7
     private TrackBank trackBank;
+    private SceneBank uiScrollBank;
 
     private final boolean[][] hasContent = new boolean[NUM_TRACKS][NUM_SCENES];
     private final boolean[][] isPlaying  = new boolean[NUM_TRACKS][NUM_SCENES];
@@ -133,10 +134,15 @@ public class KontrolF1Extension extends ControllerExtension
             return;
         }
 
-        // Set up 8-track bank
-        trackBank = host.createMainTrackBank(NUM_TRACKS, 0, CLIP_LAUNCHER_HEIGHT);
+        // Set up 8-track bank (data only — 4 scenes)
+        trackBank = host.createMainTrackBank(NUM_TRACKS, 0, NUM_SCENES);
         trackBank.sceneBank().scrollPosition().markInterested();
-        trackBank.sceneBank().scrollPosition().set(0);  // lock Clip Launcher to F1's initial position
+        trackBank.sceneBank().scrollPosition().set(0);
+
+        // Separate bank used only to drive clip launcher UI scroll position
+        uiScrollBank = host.createSceneBank(1);
+        uiScrollBank.scrollPosition().markInterested();
+        uiScrollBank.scrollPosition().set(0);
 
         for (int t = 0; t < NUM_TRACKS; t++)
         {
@@ -327,10 +333,13 @@ public class KontrolF1Extension extends ControllerExtension
         if (newLayer == currentLayer) return;
         currentLayer = newLayer;
 
-        final int firstScene   = currentLayer * NUM_SCENES + 1;
-        final int lastScene    = firstScene + NUM_SCENES - 1;
-        final int scrollTarget = Math.max(0, currentLayer * NUM_SCENES - 1);
-        trackBank.sceneBank().scrollPosition().set(scrollTarget);
+        final int firstScene = currentLayer * NUM_SCENES + 1;
+        final int lastScene  = firstScene + NUM_SCENES - 1;
+        final int dataScroll = currentLayer * NUM_SCENES;
+        trackBank.sceneBank().scrollPosition().set(dataScroll);
+        // Overshoot forward so Bitwig's minimum-scroll puts dataScroll at the top of the viewport
+        final int uiScroll = (delta > 0) ? dataScroll + VIEWPORT_HEIGHT - 1 : dataScroll;
+        uiScrollBank.scrollPosition().set(uiScroll);
         updateBothDisplays(firstScene);
         getHost().showPopupNotification("Scenes " + firstScene + " - " + lastScene);
         ledsDirty = true;
