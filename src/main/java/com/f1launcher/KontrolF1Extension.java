@@ -80,8 +80,22 @@ public class KontrolF1Extension extends ControllerExtension
     private volatile boolean     blinkOnQueued = true;
     private volatile boolean     running       = false;
 
-    private static final int BLINK_INTERVAL_MS = 350;
-    private static final int BLINK_QUEUED_MS   = 120;
+    private static final int    BLINK_INTERVAL_MS = 350;
+    private static final int    BLINK_QUEUED_MS   = 120;
+    // Deck volume knob dB breakpoints.
+    // Bitwig's volume law (empirically verified): gain = n³ × 2, so 0 dB → n ≈ 0.794.
+    // The knob is split into two linear-dB halves that meet at the centre detent:
+    //   lower half (0 → 2048): VOL_LOW_DB  → VOL_MID_DB
+    //   upper half (2048 → 4095): VOL_MID_DB → VOL_HIGH_DB
+    private static final double VOL_LOW_DB  = -50.0;  // dB at knob = 0   (near-silence)
+    private static final double VOL_MID_DB  = -10.0;  // dB at knob = 2048 (centre detent)
+    private static final double VOL_HIGH_DB =  +6.0;  // dB at knob = 4095 (Bitwig maximum)
+
+    // ── EQ-DJ parameter access ────────────────────────────────────────────────
+    // [track][param]: param 0=Low, 1=Mid, 2=High — first device on each track
+    private final RemoteControl[][] eqParams   = new RemoteControl[NUM_TRACKS][3];
+    private final int[]             prevKnobs1 = {-1, -1, -1, -1};
+    private final int[]             prevKnobs2 = {-1, -1, -1, -1};
 
     // ── Constructor ──────────────────────────────────────────────────────────
     protected KontrolF1Extension(final KontrolF1ExtensionDefinition definition, final ControllerHost host)
@@ -165,6 +179,27 @@ public class KontrolF1Extension extends ControllerExtension
                     padB[ft][fs] = (int) (b * 0x7F);
                     ledsDirty = true;
                 });
+            }
+        }
+
+        // EQ-DJ control — last device on each track, params 0/1/2 = Low/Mid/High
+        // DeviceBank(1): single slot. itemCount() fires with total device count → scroll
+        // to (count-1) so slot 0 always reflects the last device in the chain.
+        for (int t = 0; t < NUM_TRACKS; t++)
+        {
+            final int        ft   = t;
+            final DeviceBank db   = trackBank.getItemAt(t).createDeviceBank(1);
+            db.itemCount().addValueObserver(count ->
+            {
+                final int pos = Math.max(0, count - 1);
+                db.scrollPosition().set(pos);
+                host.println("Track " + ft + ": " + count + " device(s), EQ-DJ at slot " + pos);
+            });
+            final CursorRemoteControlsPage page = db.getItemAt(0).createCursorRemoteControlsPage(3);
+            for (int p = 0; p < 3; p++)
+            {
+                eqParams[ft][p] = page.getParameter(p);
+                eqParams[ft][p].markInterested();
             }
         }
 
@@ -259,6 +294,7 @@ public class KontrolF1Extension extends ControllerExtension
         processPads(data, trackOffset, newShift, newEncPush, prevPadBytes);
         processStopButtons(data[3], trackOffset, f1Index);
         processEncoder(data[4] & 0xFF, f1Index);
+        processKnobs(data, length, trackOffset, f1Index);
     }
 
     private void processPads(final byte[] data, final int trackOffset,
@@ -343,6 +379,65 @@ public class KontrolF1Extension extends ControllerExtension
         updateBothDisplays(firstScene);
         getHost().showPopupNotification("Scenes " + firstScene + " - " + lastScene);
         ledsDirty = true;
+    }
+
+    private void processKnobs(final byte[] data, final int length,
+                               final int trackOffset, final int f1Index)
+    {
+        if (length < 13) return;  // need bytes 5–12 for all 4 knobs
+
+        final int[]    prev     = (f1Index == 1) ? prevKnobs1 : prevKnobs2;
+        final String[] eqLabels = {"Low", "Mid", "High"};
+
+        for (int k = 0; k < 4; k++)
+        {
+            final int base  = 5 + k * 2;
+            final int val12 = ((data[base] & 0xFF) | ((data[base + 1] & 0xFF) << 8)) & 0x0FFF;
+
+            if (prev[k] == val12) continue;
+            prev[k] = val12;
+
+            if (k < 3)
+            {
+                // Knobs 0–2: EQ-DJ Low / Mid / High
+                final double normalized = val12 / 4095.0;
+                getHost().println("F1#" + f1Index + " EQ " + eqLabels[k] + " = " + val12
+                                  + " (" + String.format("%.3f", normalized) + ")");
+                for (int lt = 0; lt < NUM_TRACKS_PER_F1; lt++)
+                    eqParams[trackOffset + lt][k].set(normalized);
+            }
+            else
+            {
+                // Knob 3: deck master volume
+                // Two linear-dB halves meeting at the centre detent:
+                //   lower (0 → 2048): VOL_LOW_DB → VOL_MID_DB
+                //   upper (2048 → 4095): VOL_MID_DB → VOL_HIGH_DB
+                // Bitwig volume law (empirically verified): gain = n³ × 2
+                final double normalized;
+                final String dbStr;
+                if (val12 == 0)
+                {
+                    normalized = 0.0;
+                    dbStr      = "-inf";
+                }
+                else
+                {
+                    final double xn   = val12 / 4095.0;
+                    final double dB   = (xn <= 0.5)
+                        ? VOL_LOW_DB + (xn / 0.5) * (VOL_MID_DB  - VOL_LOW_DB)
+                        : VOL_MID_DB + ((xn - 0.5) / 0.5) * (VOL_HIGH_DB - VOL_MID_DB);
+                    final double gain = Math.pow(10.0, dB / 20.0);
+                    normalized        = Math.pow(gain / 2.0, 1.0 / 3.0);
+                    dbStr             = String.format("%.1f", dB);
+                }
+                getHost().println("F1#" + f1Index + " Vol knob=" + val12
+                                  + " norm=" + String.format("%.3f", normalized)
+                                  + " ≈" + dbStr + " dB"
+                                  + " → tracks " + (trackOffset + 1) + "–" + (trackOffset + NUM_TRACKS_PER_F1));
+                for (int lt = 0; lt < NUM_TRACKS_PER_F1; lt++)
+                    trackBank.getItemAt(trackOffset + lt).volume().set(normalized);
+            }
+        }
     }
 
     // ── LED output ───────────────────────────────────────────────────────────
