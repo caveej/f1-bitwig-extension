@@ -44,7 +44,10 @@ public class KontrolF1Extension extends ControllerExtension
     private static final int NUM_TRACKS        = NUM_TRACKS_PER_F1 * NUM_F1S;  // 8 total
     private static final int NUM_SCENES        = 4;
     private static final int MAX_LAYERS        = 16;
-    private static final int VIEWPORT_HEIGHT   = 12;  // visible scenes in Bitwig clip launcher — adjust if misaligned
+    // Number of scene rows visible in the Bitwig clip launcher at your current window size.
+    // Used to anchor the data window to the top of the viewport via a scroll overshoot.
+    // Increase if paging skips scenes; decrease if it falls short.
+    private static final int VIEWPORT_HEIGHT   = 7;
 
     // ── State ────────────────────────────────────────────────────────────────
     private HidDevice hidDevice1;  // F1 #1 → tracks 0-3
@@ -84,10 +87,9 @@ public class KontrolF1Extension extends ControllerExtension
     private static final int    BLINK_QUEUED_MS   = 120;
     // Deck volume knob dB breakpoints.
     // Bitwig's volume law (empirically verified): gain = n³ × 2, so 0 dB → n ≈ 0.794.
-    // The knob is split into two linear-dB halves that meet at the centre detent:
-    //   lower half (0 → 2048): VOL_LOW_DB  → VOL_MID_DB
-    //   upper half (2048 → 4095): VOL_MID_DB → VOL_HIGH_DB
-    private static final double VOL_LOW_DB  = -50.0;  // dB at knob = 0   (near-silence)
+    // Lower half (0 → 2048): linear in normalised space, silence → VOL_MID_DB.
+    //   This naturally reaches normalized=0 (silence) at the physical knob minimum.
+    // Upper half (2048 → 4095): linear dB, VOL_MID_DB → VOL_HIGH_DB.
     private static final double VOL_MID_DB  = -10.0;  // dB at knob = 2048 (centre detent)
     private static final double VOL_HIGH_DB =  +6.0;  // dB at knob = 4095 (Bitwig maximum)
 
@@ -372,9 +374,17 @@ public class KontrolF1Extension extends ControllerExtension
         final int firstScene = currentLayer * NUM_SCENES + 1;
         final int lastScene  = firstScene + NUM_SCENES - 1;
         final int dataScroll = currentLayer * NUM_SCENES;
+        // One buffer row above the page start keeps the top scene fully visible.
+        // Forward: overshoot to (dataScroll-1) + VIEWPORT_HEIGHT - 1 so Bitwig's
+        //   minimum downward scroll anchors the viewport top at dataScroll - 1.
+        // Backward: request dataScroll - 1 directly (clamped to 0 on page 0) —
+        //   Bitwig's minimum upward scroll places that scene at the top.
+        final int uiScroll = (delta > 0)
+            ? dataScroll + VIEWPORT_HEIGHT - 2
+            : Math.max(0, dataScroll - 1);
+        getHost().println("Page " + currentLayer + " → top scene " + firstScene
+                          + " (dataScroll=" + dataScroll + " uiScroll=" + uiScroll + ")");
         trackBank.sceneBank().scrollPosition().set(dataScroll);
-        // Overshoot forward so Bitwig's minimum-scroll puts dataScroll at the top of the viewport
-        final int uiScroll = (delta > 0) ? dataScroll + VIEWPORT_HEIGHT - 1 : dataScroll;
         uiScrollBank.scrollPosition().set(uiScroll);
         updateBothDisplays(firstScene);
         getHost().showPopupNotification("Scenes " + firstScene + " - " + lastScene);
@@ -413,22 +423,26 @@ public class KontrolF1Extension extends ControllerExtension
                 //   lower (0 → 2048): VOL_LOW_DB → VOL_MID_DB
                 //   upper (2048 → 4095): VOL_MID_DB → VOL_HIGH_DB
                 // Bitwig volume law (empirically verified): gain = n³ × 2
+                // n_centre = normalised value for VOL_MID_DB (-10 dB) via Bitwig cubic law
+                final double nCentre   = Math.pow(Math.pow(10.0, VOL_MID_DB / 20.0) / 2.0, 1.0 / 3.0);
+                final double xn        = val12 / 4095.0;
                 final double normalized;
                 final String dbStr;
-                if (val12 == 0)
+                if (xn <= 0.5)
                 {
-                    normalized = 0.0;
-                    dbStr      = "-inf";
+                    // Lower half: linear normalised silence → -10 dB.
+                    // Reaches normalized=0 (silence) at knob=0, nCentre at knob=2048.
+                    normalized = (xn / 0.5) * nCentre;
+                    dbStr = normalized > 0
+                        ? String.format("%.1f", 20.0 * Math.log10(normalized * normalized * normalized * 2.0))
+                        : "-inf";
                 }
                 else
                 {
-                    final double xn   = val12 / 4095.0;
-                    final double dB   = (xn <= 0.5)
-                        ? VOL_LOW_DB + (xn / 0.5) * (VOL_MID_DB  - VOL_LOW_DB)
-                        : VOL_MID_DB + ((xn - 0.5) / 0.5) * (VOL_HIGH_DB - VOL_MID_DB);
-                    final double gain = Math.pow(10.0, dB / 20.0);
-                    normalized        = Math.pow(gain / 2.0, 1.0 / 3.0);
-                    dbStr             = String.format("%.1f", dB);
+                    // Upper half: linear dB from -10 dB → +6 dB.
+                    final double dB = VOL_MID_DB + ((xn - 0.5) / 0.5) * (VOL_HIGH_DB - VOL_MID_DB);
+                    normalized = Math.pow(Math.pow(10.0, dB / 20.0) / 2.0, 1.0 / 3.0);
+                    dbStr = String.format("%.1f", dB);
                 }
                 getHost().println("F1#" + f1Index + " Vol knob=" + val12
                                   + " norm=" + String.format("%.3f", normalized)
